@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/techpartners-asia/qpay-go/utils"
+	"github.com/batorgil-it/qpay-go/utils"
 )
 
 var (

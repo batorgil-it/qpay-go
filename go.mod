@@ -1,4 +1,4 @@
-module github.com/techpartners-asia/qpay-go
+module github.com/batorgil-it/qpay-go
 
 go 1.25.0
 

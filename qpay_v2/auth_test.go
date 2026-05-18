@@ -47,13 +47,17 @@ func newMockServer(t *testing.T, authCalls *atomic.Int32, refreshCalls *atomic.I
 }
 
 func newTestQPay(endpoint string) *qpay {
-	return &qpay{
+	q := &qpay{
 		endpoint:    endpoint,
 		username:    "test-user",
 		password:    "test-pass",
 		invoiceCode: "TEST",
 		client:      resty.New().SetTimeout(5 * time.Second),
+		plugins:     map[string]Plugin{},
 	}
+	q.cbs = initializeCallbacks(q)
+	registerDefaultCallbacks(q)
+	return q
 }
 
 func TestTokenValid_CachedWhenFresh(t *testing.T) {

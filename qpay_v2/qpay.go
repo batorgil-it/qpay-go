@@ -1,6 +1,7 @@
 package qpay_v2
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/batorgil-it/qpay-go/utils"
 	"golang.org/x/sync/singleflight"
 	"resty.dev/v3"
 )
@@ -25,6 +27,8 @@ type qpay struct {
 	mu          sync.RWMutex
 	authGroup   singleflight.Group // Coalesces concurrent auth calls into one
 	client      *resty.Client
+	plugins     map[string]Plugin
+	cbs         *Callbacks
 }
 
 // QPay [QPay V2 SDK Interface / Интерфэйс]
@@ -69,6 +73,24 @@ type QPay interface {
 
 	// CancelEbarimt [И-баримт 3.0 цуцлах]
 	CancelEbarimt(paymentId string) (QPayEbarimtResponse, error)
+
+	// WithContext returns a shallow session that injects ctx into every
+	// subsequent operation's Statement, enabling span propagation for plugins
+	// such as the OpenTelemetry tracing plugin.
+	//
+	// Usage:
+	//   client.WithContext(ctx).CreateInvoice(input)
+	WithContext(ctx context.Context) QPay
+
+	// Use registers a plugin with the client.
+	// Returns ErrPluginRegistered if a plugin with the same name already exists.
+	// Initialize is called before the plugin is stored, so a failing Initialize
+	// leaves the plugin map unchanged.
+	Use(plugin Plugin) error
+
+	// Callback returns the callback registry, giving direct access to every
+	// operation's Processor for registering hooks outside of a full Plugin.
+	Callback() *Callbacks
 }
 
 // Option defines an option for qpay initialization.
@@ -110,11 +132,15 @@ func New(username, password, endpoint, callback, invoiceCode, merchantId string,
 		invoiceCode: invoiceCode,
 		merchantId:  merchantId,
 		client:      resty.New().SetTransport(newTransport()).SetTimeout(60 * time.Second),
+		plugins:     map[string]Plugin{},
 	}
 
 	for _, opt := range options {
 		opt(q)
 	}
+
+	q.cbs = initializeCallbacks(q)
+	registerDefaultCallbacks(q)
 
 	if q.syncAuth {
 		// Block until auth completes with retry.
@@ -137,13 +163,59 @@ func New(username, password, endpoint, callback, invoiceCode, merchantId string,
 	return q
 }
 
-// CreateInvoice [Нэхэмжлэх үүсгэх]
-func (q *qpay) CreateInvoice(input QPayCreateInvoiceInput) (QPaySimpleInvoiceResponse, error) {
+// WithContext returns a session that propagates ctx into every operation's
+// Statement.Context, so plugins (e.g. the OTel tracing plugin) can start
+// child spans under the caller's trace.
+func (q *qpay) WithContext(ctx context.Context) QPay {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &withContextQPay{q: q, ctx: ctx}
+}
+
+// Use registers a plugin with the client. Initialize is called before the
+// plugin is stored — a failing Initialize leaves the plugin map unchanged.
+func (q *qpay) Use(plugin Plugin) error {
+	name := plugin.Name()
+	if _, ok := q.plugins[name]; ok {
+		return ErrPluginRegistered
+	}
+	if err := plugin.Initialize(q); err != nil {
+		return err
+	}
+	q.plugins[name] = plugin
+	return nil
+}
+
+// Callback returns the callback registry for direct hook registration.
+// It implements the Hooks interface so *qpay can be passed to Plugin.Initialize.
+func (q *qpay) Callback() *Callbacks {
+	return q.cbs
+}
+
+// newContext constructs a per-request Context ready for processor.Execute.
+// goCtx is stored in Statement.Context so plugins can propagate traces.
+func (q *qpay) newContext(goCtx context.Context, op string, req interface{}, resp interface{}, api utils.API, urlExt string) *Context {
+	return &Context{
+		client: q,
+		Statement: &Statement{
+			Context:   goCtx,
+			Operation: op,
+			Request:   req,
+			Response:  resp,
+			API:       api,
+			URLExt:    urlExt,
+		},
+	}
+}
+
+// buildCreateInvoiceRequest assembles the wire request from user input.
+// Extracted so that the WithContext session can reuse it without duplication.
+func (q *qpay) buildCreateInvoiceRequest(input QPayCreateInvoiceInput) QPaySimpleInvoiceRequest {
 	vals := url.Values{}
 	for k, v := range input.CallbackParam {
 		vals.Add(k, v)
 	}
-
 	callbackUrl := q.callback
 	if len(vals) > 0 {
 		callbackUrl = fmt.Sprintf("%s?%s", q.callback, vals.Encode())
@@ -158,7 +230,7 @@ func (q *qpay) CreateInvoice(input QPayCreateInvoiceInput) (QPaySimpleInvoiceRes
 		maxAmt = &input.MaximumAmount
 	}
 
-	request := QPaySimpleInvoiceRequest{
+	return QPaySimpleInvoiceRequest{
 		InvoiceCode:         q.invoiceCode,
 		SenderInvoiceNo:     input.SenderInvoiceNo,
 		SenderBranchCode:    input.SenderBranchCode,
@@ -186,26 +258,52 @@ func (q *qpay) CreateInvoice(input QPayCreateInvoiceInput) (QPaySimpleInvoiceRes
 		LineTaxCode:         input.LineTaxCode,
 		Transactions:        input.Transactions,
 	}
+}
 
-	var response QPaySimpleInvoiceResponse
-	err := q.httpRequestQPay(request, &response, QPayInvoiceCreate, "")
-	if err != nil {
-		return QPaySimpleInvoiceResponse{}, err
+// buildGetPaymentListRequest assembles the list request with defaults applied.
+func (q *qpay) buildGetPaymentListRequest(input QPayPaymentListInput) QpayPaymentListRequest {
+	objType := input.ObjectType
+	if objType == "" {
+		objType = "MERCHANT"
 	}
+	objID := input.ObjectID
+	if objID == "" {
+		objID = q.merchantId
+	}
+	return QpayPaymentListRequest{
+		ObjectType:           objType,
+		ObjectID:             objID,
+		MerchantBranchCode:   input.BranchCode,
+		MerchantTerminalCode: input.TerminalCode,
+		MerchantStaffCode:    input.StaffCode,
+		Offset: QpayOffset{
+			PageLimit:  input.PageLimit,
+			PageNumber: input.PageNumber,
+		},
+	}
+}
 
+// CreateInvoice [Нэхэмжлэх үүсгэх]
+func (q *qpay) CreateInvoice(input QPayCreateInvoiceInput) (QPaySimpleInvoiceResponse, error) {
+	request := q.buildCreateInvoiceRequest(input)
+	var response QPaySimpleInvoiceResponse
+	ctx := q.newContext(context.Background(), "create_invoice", request, &response, QPayInvoiceCreate, "")
+	q.cbs.CreateInvoice().Execute(ctx)
+	if ctx.Error != nil {
+		return QPaySimpleInvoiceResponse{}, ctx.Error
+	}
 	return response, nil
 }
 
 // CreateEbarimtInvoice [И-баримт 3.0 мэдээлэлтэй нэхэмжлэх үүсгэх]
 func (q *qpay) CreateEbarimtInvoice(input QPayCreateEbarimtInvoiceInput) (QPaySimpleInvoiceResponse, error) {
 	request := q.newEbarimtInvoiceRequest(input)
-
 	var response QPaySimpleInvoiceResponse
-	err := q.httpRequestQPay(request, &response, QPayInvoiceCreate, "")
-	if err != nil {
-		return QPaySimpleInvoiceResponse{}, err
+	ctx := q.newContext(context.Background(), "create_ebarimt_invoice", request, &response, QPayInvoiceCreate, "")
+	q.cbs.CreateEbarimtInvoice().Execute(ctx)
+	if ctx.Error != nil {
+		return QPaySimpleInvoiceResponse{}, ctx.Error
 	}
-
 	return response, nil
 }
 
@@ -254,33 +352,33 @@ func (q *qpay) newEbarimtInvoiceRequest(input QPayCreateEbarimtInvoiceInput) QPa
 // GetInvoice [Нэхэмжлэхийн мэдээлэл авах]
 func (q *qpay) GetInvoice(invoiceId string) (QpayInvoiceGetResponse, error) {
 	var response QpayInvoiceGetResponse
-	err := q.httpRequestQPay(nil, &response, QPayInvoiceGet, invoiceId)
-	if err != nil {
-		return QpayInvoiceGetResponse{}, err
+	ctx := q.newContext(context.Background(), "get_invoice", nil, &response, QPayInvoiceGet, invoiceId)
+	q.cbs.GetInvoice().Execute(ctx)
+	if ctx.Error != nil {
+		return QpayInvoiceGetResponse{}, ctx.Error
 	}
-
 	return response, nil
 }
 
 // CancelInvoice [Үүсгэсэн нэхэмжлэлийг цуцлах]
 func (q *qpay) CancelInvoice(invoiceId string) (QpayGeneralResponse, error) {
 	var response QpayGeneralResponse
-	err := q.httpRequestQPay(nil, &response, QPayInvoiceCancel, invoiceId)
-	if err != nil {
-		return QpayGeneralResponse{}, err
+	ctx := q.newContext(context.Background(), "cancel_invoice", nil, &response, QPayInvoiceCancel, invoiceId)
+	q.cbs.CancelInvoice().Execute(ctx)
+	if ctx.Error != nil {
+		return QpayGeneralResponse{}, ctx.Error
 	}
-
 	return response, nil
 }
 
 // GetPayment [Төлбөрийн мэдээлэл татах]
 func (q *qpay) GetPayment(paymentId string) (QpayTransaction, error) {
 	var response QpayTransaction
-	err := q.httpRequestQPay(nil, &response, QPayPaymentGet, paymentId)
-	if err != nil {
-		return QpayTransaction{}, err
+	ctx := q.newContext(context.Background(), "get_payment", nil, &response, QPayPaymentGet, paymentId)
+	q.cbs.GetPayment().Execute(ctx)
+	if ctx.Error != nil {
+		return QpayTransaction{}, ctx.Error
 	}
-
 	return response, nil
 }
 
@@ -294,13 +392,12 @@ func (q *qpay) CheckPayment(invoiceId string, pageLimit, pageNumber int64) (Qpay
 			PageNumber: pageNumber,
 		},
 	}
-
 	var response QpayPaymentCheckResponse
-	err := q.httpRequestQPay(req, &response, QPayPaymentCheck, "")
-	if err != nil {
-		return response, err
+	ctx := q.newContext(context.Background(), "check_payment", req, &response, QPayPaymentCheck, "")
+	q.cbs.CheckPayment().Execute(ctx)
+	if ctx.Error != nil {
+		return QpayPaymentCheckResponse{}, ctx.Error
 	}
-
 	return response, nil
 }
 
@@ -310,13 +407,12 @@ func (q *qpay) CancelPayment(invoiceId, paymentId string) (QpayGeneralResponse, 
 		CallbackUrl: q.callback,
 		Note:        "Cancel payment for invoice: " + invoiceId,
 	}
-
 	var response QpayGeneralResponse
-	err := q.httpRequestQPay(req, &response, QPayPaymentCancel, paymentId)
-	if err != nil {
-		return QpayGeneralResponse{}, err
+	ctx := q.newContext(context.Background(), "cancel_payment", req, &response, QPayPaymentCancel, paymentId)
+	q.cbs.CancelPayment().Execute(ctx)
+	if ctx.Error != nil {
+		return QpayGeneralResponse{}, ctx.Error
 	}
-
 	return response, nil
 }
 
@@ -326,13 +422,12 @@ func (q *qpay) RefundPayment(invoiceId, paymentId string) (QpayGeneralResponse, 
 		CallbackUrl: q.callback,
 		Note:        "Refund payment for invoice: " + invoiceId,
 	}
-
 	var response QpayGeneralResponse
-	err := q.httpRequestQPay(req, &response, QPayPaymentRefund, paymentId)
-	if err != nil {
-		return QpayGeneralResponse{}, err
+	ctx := q.newContext(context.Background(), "refund_payment", req, &response, QPayPaymentRefund, paymentId)
+	q.cbs.RefundPayment().Execute(ctx)
+	if ctx.Error != nil {
+		return QpayGeneralResponse{}, ctx.Error
 	}
-
 	return response, nil
 }
 
@@ -356,36 +451,13 @@ func newTransport() *http.Transport {
 
 // GetPaymentList [Төлбөр төлөлтийн жагсаалт авах]
 func (q *qpay) GetPaymentList(input QPayPaymentListInput) (QpayPaymentListResponse, error) {
-	// Default to MERCHANT if not specified
-	objType := input.ObjectType
-	if objType == "" {
-		objType = "MERCHANT"
-	}
-
-	// Default to q.merchantId if not specified
-	objID := input.ObjectID
-	if objID == "" {
-		objID = q.merchantId
-	}
-
-	req := QpayPaymentListRequest{
-		ObjectType:           objType,
-		ObjectID:             objID,
-		MerchantBranchCode:   input.BranchCode,
-		MerchantTerminalCode: input.TerminalCode,
-		MerchantStaffCode:    input.StaffCode,
-		Offset: QpayOffset{
-			PageLimit:  input.PageLimit,
-			PageNumber: input.PageNumber,
-		},
-	}
-
+	req := q.buildGetPaymentListRequest(input)
 	var response QpayPaymentListResponse
-	err := q.httpRequestQPay(req, &response, QPayPaymentList, "")
-	if err != nil {
-		return QpayPaymentListResponse{}, err
+	ctx := q.newContext(context.Background(), "get_payment_list", req, &response, QPayPaymentList, "")
+	q.cbs.GetPaymentList().Execute(ctx)
+	if ctx.Error != nil {
+		return QpayPaymentListResponse{}, ctx.Error
 	}
-
 	return response, nil
 }
 
@@ -398,23 +470,22 @@ func (q *qpay) CreateEbarimt(input QPayEbarimtCreateInput) (QPayEbarimtResponse,
 		DistrictCode:        input.DistrictCode,
 		ClassificationCode:  input.ClassificationCode,
 	}
-
 	var response QPayEbarimtResponse
-	err := q.httpRequestQPay(request, &response, QPayEbarimtCreate, "")
-	if err != nil {
-		return QPayEbarimtResponse{}, err
+	ctx := q.newContext(context.Background(), "create_ebarimt", request, &response, QPayEbarimtCreate, "")
+	q.cbs.CreateEbarimt().Execute(ctx)
+	if ctx.Error != nil {
+		return QPayEbarimtResponse{}, ctx.Error
 	}
-
 	return response, nil
 }
 
 // CancelEbarimt [И-баримт 3.0 цуцлах]
 func (q *qpay) CancelEbarimt(paymentId string) (QPayEbarimtResponse, error) {
 	var response QPayEbarimtResponse
-	err := q.httpRequestQPay(nil, &response, QPayEbarimtCancel, paymentId)
-	if err != nil {
-		return QPayEbarimtResponse{}, err
+	ctx := q.newContext(context.Background(), "cancel_ebarimt", nil, &response, QPayEbarimtCancel, paymentId)
+	q.cbs.CancelEbarimt().Execute(ctx)
+	if ctx.Error != nil {
+		return QPayEbarimtResponse{}, ctx.Error
 	}
-
 	return response, nil
 }

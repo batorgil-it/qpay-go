@@ -5,7 +5,7 @@ Unofficial Go SDK for the [QPay](https://qpay.mn) payment gateway. Supports QPay
 ## Installation
 
 ```bash
-go get github.com/techpartners-asia/qpay-go
+go get github.com/batorgil-it/qpay-go
 ```
 
 **Requires Go 1.23+**
@@ -14,11 +14,11 @@ go get github.com/techpartners-asia/qpay-go
 
 ## Packages
 
-| Package | Description |
-|---|---|
-| `qpay_v2` | QPay V2 — recommended for new integrations |
-| `qpay_v1` | QPay V1 — legacy support |
-| `qpay_quick` | QPay Quick — marketplace/sub-merchant API |
+| Package      | Description                                |
+| ------------ | ------------------------------------------ |
+| `qpay_v2`    | QPay V2 — recommended for new integrations |
+| `qpay_v1`    | QPay V1 — legacy support                   |
+| `qpay_quick` | QPay Quick — marketplace/sub-merchant API  |
 
 ---
 
@@ -27,7 +27,7 @@ go get github.com/techpartners-asia/qpay-go
 ### Initialize
 
 ```go
-import qpay "github.com/techpartners-asia/qpay-go/qpay_v2"
+import qpay "github.com/batorgil-it/qpay-go/qpay_v2"
 
 client := qpay.New(
     "YOUR_USERNAME",                // QPay username (client_id)
@@ -39,17 +39,16 @@ client := qpay.New(
 )
 ```
 
-
 **Sandbox endpoint:** `https://merchant-sandbox.qpay.mn/v2`
 
 #### Options
 
 You can pass options to `New()` to customize behavior:
 
-| Option | Description |
-|---|---|
-| `WithSyncAuth()` | Block until auth completes (default: async background auth) |
-| `WithClient(c)` | Inject a custom `resty.Client` (e.g. for custom TLS, proxies, or logging) |
+| Option           | Description                                                               |
+| ---------------- | ------------------------------------------------------------------------- |
+| `WithSyncAuth()` | Block until auth completes (default: async background auth)               |
+| `WithClient(c)`  | Inject a custom `resty.Client` (e.g. for custom TLS, proxies, or logging) |
 
 ```go
 // Sync auth — New() blocks until token is ready
@@ -240,7 +239,7 @@ The SDK handles authentication automatically. Tokens are cached and refreshed be
 ## QPay V1
 
 ```go
-import qpay "github.com/techpartners-asia/qpay-go/qpay_v1"
+import qpay "github.com/batorgil-it/qpay-go/qpay_v1"
 
 client := qpay.New(
     "CLIENT_ID",
@@ -275,7 +274,7 @@ payment, err := client.CheckPayment("PAYMENT_ID")
 QPay Quick is a marketplace API for platforms that onboard sub-merchants.
 
 ```go
-import qpay "github.com/techpartners-asia/qpay-go/qpay_quick"
+import qpay "github.com/batorgil-it/qpay-go/qpay_quick"
 
 client := qpay.New(
     "USERNAME",
