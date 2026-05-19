@@ -147,7 +147,7 @@ func New(username, password, endpoint, callback, invoiceCode, merchantId string,
 		// If QPay is temporarily unreachable, retry up to 3 times
 		// with a 1-second delay between attempts.
 		for i := 0; i < 3; i++ {
-			if _, err := q.authQPayV2(); err == nil {
+			if _, err := q.authQPayV2(context.Background()); err == nil {
 				break
 			}
 			if i < 2 {
@@ -157,7 +157,7 @@ func New(username, password, endpoint, callback, invoiceCode, merchantId string,
 	} else {
 		// Attempt login in background to warm the token cache.
 		// If it fails, authQPayV2 will retry on the first API call.
-		go q.authQPayV2() //nolint:errcheck
+		go q.authQPayV2(context.Background()) //nolint:errcheck
 	}
 
 	return q

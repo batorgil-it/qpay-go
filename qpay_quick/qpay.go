@@ -137,7 +137,7 @@ func New(username, password, endpoint, callback, terminalID string, options ...O
 
 	if q.syncAuth {
 		for i := 0; i < 3; i++ {
-			if _, err := q.authQPayV2(); err == nil {
+			if _, err := q.authQPayV2(context.Background()); err == nil {
 				break
 			}
 			if i < 2 {
@@ -145,7 +145,7 @@ func New(username, password, endpoint, callback, terminalID string, options ...O
 			}
 		}
 	} else {
-		go q.authQPayV2() //nolint:errcheck
+		go q.authQPayV2(context.Background()) //nolint:errcheck
 	}
 
 	return q

@@ -1,6 +1,7 @@
 package qpay_v2
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -68,7 +69,7 @@ func TestTokenValid_CachedWhenFresh(t *testing.T) {
 	q := newTestQPay(srv.URL)
 
 	// First call — should hit /auth/token
-	_, err := q.authQPayV2()
+	_, err := q.authQPayV2(context.Background())
 	if err != nil {
 		t.Fatalf("first auth failed: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestTokenValid_CachedWhenFresh(t *testing.T) {
 	}
 
 	// Second call — should use cache, no network
-	_, err = q.authQPayV2()
+	_, err = q.authQPayV2(context.Background())
 	if err != nil {
 		t.Fatalf("cached auth failed: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestTokenExpired_ReauthCalled(t *testing.T) {
 	q := newTestQPay(srv.URL)
 
 	// First auth
-	_, err := q.authQPayV2()
+	_, err := q.authQPayV2(context.Background())
 	if err != nil {
 		t.Fatalf("first auth failed: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestTokenExpired_ReauthCalled(t *testing.T) {
 	q.mu.Unlock()
 
 	// Should use refresh token (refresh_expires_in is still valid)
-	_, err = q.authQPayV2()
+	_, err = q.authQPayV2(context.Background())
 	if err != nil {
 		t.Fatalf("refresh auth failed: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestRefreshExpired_FullAuthFallback(t *testing.T) {
 	q := newTestQPay(srv.URL)
 
 	// First auth
-	_, err := q.authQPayV2()
+	_, err := q.authQPayV2(context.Background())
 	if err != nil {
 		t.Fatalf("first auth failed: %v", err)
 	}
@@ -134,7 +135,7 @@ func TestRefreshExpired_FullAuthFallback(t *testing.T) {
 	q.mu.Unlock()
 
 	// Should fallback to full auth
-	_, err = q.authQPayV2()
+	_, err = q.authQPayV2(context.Background())
 	if err != nil {
 		t.Fatalf("fallback auth failed: %v", err)
 	}
@@ -173,7 +174,7 @@ func TestRefreshFails_FallsBackToFullAuth(t *testing.T) {
 	q := newTestQPay(srv.URL)
 
 	// First auth
-	_, err := q.authQPayV2()
+	_, err := q.authQPayV2(context.Background())
 	if err != nil {
 		t.Fatalf("first auth failed: %v", err)
 	}
@@ -184,7 +185,7 @@ func TestRefreshFails_FallsBackToFullAuth(t *testing.T) {
 	q.mu.Unlock()
 
 	// Refresh will fail → should fallback to full auth
-	_, err = q.authQPayV2()
+	_, err = q.authQPayV2(context.Background())
 	if err != nil {
 		t.Fatalf("fallback auth failed: %v", err)
 	}
@@ -220,7 +221,7 @@ func TestSingleflight_ConcurrentCallsMakeOneRequest(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := q.authQPayV2()
+			_, err := q.authQPayV2(context.Background())
 			if err != nil {
 				errors <- err
 			}
@@ -246,7 +247,7 @@ func TestAuthServerDown_ReturnsError(t *testing.T) {
 
 	q := newTestQPay(srv.URL)
 
-	_, err := q.authQPayV2()
+	_, err := q.authQPayV2(context.Background())
 	if err == nil {
 		t.Fatal("expected error when server is down, got nil")
 	}

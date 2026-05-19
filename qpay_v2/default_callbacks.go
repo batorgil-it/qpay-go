@@ -69,6 +69,7 @@ func registerDefaultCallbacks(q *qpay) {
 			return
 		}
 		ctx.AddError(ctx.client.httpRequestQPay(
+			ctx.Statement.Context,
 			ctx.Statement.Request,
 			ctx.Statement.Response,
 			ctx.Statement.API,

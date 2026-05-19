@@ -95,8 +95,8 @@ var (
 // result: Хариуг задлах бүтэц (struct pointer)
 // api: utils.API төрлийн эндпоинт тохиргоо
 // urlExt: URL-д залгагдах нэмэлт ID
-func (q *qpayquick) httpRequestQPay(body interface{}, result interface{}, api utils.API, urlExt string) error {
-	if _, err := q.authQPayV2(); err != nil {
+func (q *qpayquick) httpRequestQPay(goCtx context.Context, body interface{}, result interface{}, api utils.API, urlExt string) error {
+	if _, err := q.authQPayV2(goCtx); err != nil {
 		return err
 	}
 
@@ -134,7 +134,7 @@ func (q *qpayquick) httpRequestQPay(body interface{}, result interface{}, api ut
 
 // authQPayV2 [Internal: qPay-ээс Access Token авах/шинэчлэх]
 // Simple: check token → if valid return cached → if expired, one goroutine auths via singleflight.
-func (q *qpayquick) authQPayV2() (qpayLoginResponse, error) {
+func (q *qpayquick) authQPayV2(goCtx context.Context) (qpayLoginResponse, error) {
 	q.mu.RLock()
 	if q.loginObject != nil && q.tokenValid() {
 		res := *q.loginObject
@@ -161,12 +161,12 @@ func (q *qpayquick) authQPayV2() (qpayLoginResponse, error) {
 		var res qpayLoginResponse
 		var authErr error
 		if canRefresh {
-			res, authErr = q.execRefreshAuth(refreshToken)
+			res, authErr = q.execRefreshAuth(goCtx, refreshToken)
 			if authErr != nil {
-				res, authErr = q.execAuth()
+				res, authErr = q.execAuth(goCtx)
 			}
 		} else {
-			res, authErr = q.execAuth()
+			res, authErr = q.execAuth(goCtx)
 		}
 		if authErr != nil {
 			return res, authErr
@@ -184,17 +184,17 @@ func (q *qpayquick) authQPayV2() (qpayLoginResponse, error) {
 }
 
 // execAuth runs the "auth" processor chain and returns the login response.
-func (q *qpayquick) execAuth() (qpayLoginResponse, error) {
+func (q *qpayquick) execAuth(goCtx context.Context) (qpayLoginResponse, error) {
 	var result qpayLoginResponse
-	ctx := q.newContext(context.Background(), "auth", nil, &result, QPayAuthToken, "")
+	ctx := q.newContext(goCtx, "auth", nil, &result, QPayAuthToken, "")
 	q.cbs.Auth().Execute(ctx)
 	return result, ctx.Error
 }
 
 // execRefreshAuth runs the "refresh_auth" processor chain with the given token.
-func (q *qpayquick) execRefreshAuth(refreshToken string) (qpayLoginResponse, error) {
+func (q *qpayquick) execRefreshAuth(goCtx context.Context, refreshToken string) (qpayLoginResponse, error) {
 	var result qpayLoginResponse
-	ctx := q.newContext(context.Background(), "refresh_auth", refreshToken, &result, QPayAuthRefresh, "")
+	ctx := q.newContext(goCtx, "refresh_auth", refreshToken, &result, QPayAuthRefresh, "")
 	q.cbs.RefreshAuth().Execute(ctx)
 	return result, ctx.Error
 }
