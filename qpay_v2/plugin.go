@@ -35,6 +35,9 @@ type Callbacks struct {
 func initializeCallbacks(q *qpay) *Callbacks {
 	return &Callbacks{
 		processors: map[string]*Processor{
+			"auth":                   {client: q},
+			"refresh_auth":           {client: q},
+			"http_request":           {client: q},
 			"create_invoice":         {client: q},
 			"create_ebarimt_invoice": {client: q},
 			"get_invoice":            {client: q},
@@ -51,6 +54,9 @@ func initializeCallbacks(q *qpay) *Callbacks {
 }
 
 // Operation-specific accessor methods — plugins use these to target hooks.
+func (c *Callbacks) Auth() *Processor                 { return c.processors["auth"] }
+func (c *Callbacks) RefreshAuth() *Processor          { return c.processors["refresh_auth"] }
+func (c *Callbacks) HttpRequest() *Processor          { return c.processors["http_request"] }
 func (c *Callbacks) CreateInvoice() *Processor        { return c.processors["create_invoice"] }
 func (c *Callbacks) CreateEbarimtInvoice() *Processor { return c.processors["create_ebarimt_invoice"] }
 func (c *Callbacks) GetInvoice() *Processor           { return c.processors["get_invoice"] }

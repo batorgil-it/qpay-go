@@ -1,6 +1,7 @@
 package qpay_quick
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -160,12 +161,12 @@ func (q *qpayquick) authQPayV2() (qpayLoginResponse, error) {
 		var res qpayLoginResponse
 		var authErr error
 		if canRefresh {
-			res, authErr = q.doRefresh(refreshToken)
+			res, authErr = q.execRefreshAuth(refreshToken)
 			if authErr != nil {
-				res, authErr = q.doAuth()
+				res, authErr = q.execAuth()
 			}
 		} else {
-			res, authErr = q.doAuth()
+			res, authErr = q.execAuth()
 		}
 		if authErr != nil {
 			return res, authErr
@@ -182,6 +183,22 @@ func (q *qpayquick) authQPayV2() (qpayLoginResponse, error) {
 	return v.(qpayLoginResponse), nil
 }
 
+// execAuth runs the "auth" processor chain and returns the login response.
+func (q *qpayquick) execAuth() (qpayLoginResponse, error) {
+	var result qpayLoginResponse
+	ctx := q.newContext(context.Background(), "auth", nil, &result, QPayAuthToken, "")
+	q.cbs.Auth().Execute(ctx)
+	return result, ctx.Error
+}
+
+// execRefreshAuth runs the "refresh_auth" processor chain with the given token.
+func (q *qpayquick) execRefreshAuth(refreshToken string) (qpayLoginResponse, error) {
+	var result qpayLoginResponse
+	ctx := q.newContext(context.Background(), "refresh_auth", refreshToken, &result, QPayAuthRefresh, "")
+	q.cbs.RefreshAuth().Execute(ctx)
+	return result, ctx.Error
+}
+
 // tokenValid checks if access token is still valid (must hold mu.RLock)
 func (q *qpayquick) tokenValid() bool {
 	return time.Now().Before(time.Unix(q.loginObject.ExpiresIn, 0).Add(-1 * time.Minute))
@@ -190,41 +207,4 @@ func (q *qpayquick) tokenValid() bool {
 // refreshTokenValid checks if refresh token is still valid (must hold mu.RLock)
 func (q *qpayquick) refreshTokenValid() bool {
 	return time.Now().Before(time.Unix(q.loginObject.RefreshExpiresIn, 0).Add(-1 * time.Minute))
-}
-
-// doAuth [Full auth: username/password + terminal_id]
-func (q *qpayquick) doAuth() (qpayLoginResponse, error) {
-	var authRes qpayLoginResponse
-	res, err := q.client.R().
-		SetHeader("Content-Type", "application/json").
-		SetBasicAuth(q.username, q.password).
-		SetBody(map[string]string{"terminal_id": q.terminalID}).
-		SetResult(&authRes).
-		Post(q.endpoint + QPayAuthToken.Url)
-	if err != nil {
-		return authRes, err
-	}
-	if res.IsError() {
-		return authRes, fmt.Errorf("%s-QPay auth failed: %s (Status: %d)",
-			time.Now().Format("2006-01-02 15:04:05"), res.String(), res.StatusCode())
-	}
-	return authRes, nil
-}
-
-// doRefresh [Refresh token ашиглан access token шинэчлэх]
-func (q *qpayquick) doRefresh(refreshToken string) (qpayLoginResponse, error) {
-	var authRes qpayLoginResponse
-	res, err := q.client.R().
-		SetHeader("Content-Type", "application/json").
-		SetAuthToken(refreshToken).
-		SetResult(&authRes).
-		Post(q.endpoint + QPayAuthRefresh.Url)
-	if err != nil {
-		return authRes, err
-	}
-	if res.IsError() {
-		return authRes, fmt.Errorf("%s-QPay refresh failed: %s (Status: %d)",
-			time.Now().Format("2006-01-02 15:04:05"), res.String(), res.StatusCode())
-	}
-	return authRes, nil
 }
