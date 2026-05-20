@@ -95,6 +95,7 @@ func (q *qpay) httpRequestQPay(goCtx context.Context, body interface{}, result i
 
 	url := q.endpoint + api.Url + urlExt
 	req := q.client.R().
+		SetContext(goCtx).
 		SetHeader("Content-Type", "application/json").
 		SetAuthToken(token).
 		SetResult(result)
@@ -173,6 +174,11 @@ func (q *qpay) authQPayV2(goCtx context.Context) (qpayLoginResponse, error) {
 		q.mu.Lock()
 		q.loginObject = &res
 		q.mu.Unlock()
+
+		// Proactively refresh the token at 80% of its lifetime so the fast
+		// path in authQPayV2 is almost always taken under sustained load.
+		q.scheduleTokenRefresh()
+
 		return res, nil
 	})
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/batorgil-it/qpay-go/utils"
@@ -29,6 +30,10 @@ type qpay struct {
 	client      *resty.Client
 	plugins     map[string]Plugin
 	cbs         *Callbacks
+
+	// refreshScheduled guards against duplicate proactive-refresh goroutines.
+	// Only one background refresh may be in-flight at a time.
+	refreshScheduled atomic.Bool
 }
 
 // QPay [QPay V2 SDK Interface / Интерфэйс]
@@ -431,7 +436,20 @@ func (q *qpay) RefundPayment(invoiceId, paymentId string) (QpayGeneralResponse, 
 	return response, nil
 }
 
-// newTransport creates an http.Transport with sensible defaults.
+// newTransport creates an http.Transport tuned for ~200 req/s sustained load.
+//
+// Connection-pool sizing rationale (200 req/s target):
+//   - QPay p95 response time is assumed ≤500 ms.
+//   - Little's law: L = λ × W → 200 × 0.5 = 100 concurrent connections needed.
+//   - MaxConnsPerHost and MaxIdleConnsPerHost are both set to 100 so the idle
+//     pool always covers the full active pool; no warm connection is ever evicted
+//     while requests are in-flight.
+//   - IdleConnTimeout is raised to 90 s so connections survive short idle gaps
+//     between bursts without paying TCP+TLS setup again.
+//
+// ResponseHeaderTimeout is tightened to 8 s: a payment API that hasn't sent
+// response headers within 8 s is almost certainly hung, and holding a connection
+// slot for 30 s would quickly exhaust the pool under load.
 func newTransport() *http.Transport {
 	return &http.Transport{
 		DialContext: (&net.Dialer{
@@ -439,14 +457,45 @@ func newTransport() *http.Transport {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   10,
-		MaxConnsPerHost:       20,
-		IdleConnTimeout:       30 * time.Second,
+		MaxIdleConns:          200,
+		MaxIdleConnsPerHost:   100,
+		MaxConnsPerHost:       100,
+		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: 8 * time.Second,
 		ForceAttemptHTTP2:     true,
 	}
+}
+
+// scheduleTokenRefresh arranges for a single background goroutine to silently
+// refresh the access token at 80% of its lifetime, so the token is always
+// fresh before it expires and the hot path in authQPayV2 is almost always taken.
+//
+// Only one refresh goroutine is allowed at a time; further calls while one is
+// already sleeping are no-ops (guarded by refreshScheduled).
+func (q *qpay) scheduleTokenRefresh() {
+	if !q.refreshScheduled.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer q.refreshScheduled.Store(false)
+
+		q.mu.RLock()
+		if q.loginObject == nil {
+			q.mu.RUnlock()
+			return
+		}
+		expiresIn := q.loginObject.ExpiresIn
+		q.mu.RUnlock()
+
+		ttl := time.Until(time.Unix(expiresIn, 0))
+		delay := time.Duration(float64(ttl) * 0.80)
+		if delay <= 0 {
+			return
+		}
+		time.Sleep(delay)
+		q.authQPayV2(context.Background()) //nolint:errcheck
+	}()
 }
 
 // GetPaymentList [Төлбөр төлөлтийн жагсаалт авах]

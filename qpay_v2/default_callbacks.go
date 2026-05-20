@@ -25,6 +25,7 @@ func registerDefaultCallbacks(q *qpay) {
 			return
 		}
 		res, err := ctx.client.client.R().
+			SetContext(ctx.Statement.Context).
 			SetHeader("Content-Type", "application/json").
 			SetBasicAuth(ctx.client.username, ctx.client.password).
 			SetResult(ctx.Statement.Response).
@@ -45,6 +46,7 @@ func registerDefaultCallbacks(q *qpay) {
 		}
 		refreshToken, _ := ctx.Statement.Request.(string)
 		res, err := ctx.client.client.R().
+			SetContext(ctx.Statement.Context).
 			SetHeader("Content-Type", "application/json").
 			SetAuthToken(refreshToken).
 			SetResult(ctx.Statement.Response).
